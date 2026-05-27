@@ -1,0 +1,341 @@
+// prisma/schema.prisma
+// Complete database schema for PortfolioInsight Pro
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// USERS & AUTHENTICATION
+// ============================================================================
+
+model User {
+  id                    String    @id @default(cuid())
+  email                 String    @unique
+  passwordHash          String?
+  name                  String?
+  profileImage          String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  // Portfolio settings
+  totalCapital          Decimal   @default(0) @db.Decimal(15, 2)
+  riskProfile           String    @default("balanced") // conservative, balanced, aggressive
+  tradingMode           String    @default("manual") // manual, auto
+  maxPositions          Int       @default(10)
+  maxPositionSize       Decimal   @default(50000) @db.Decimal(15, 2)
+
+  // Broker integration
+  brokerType            String?   // zerodha, angelone, etc
+  brokerAccessToken     String?   // encrypted
+  brokerRefreshToken    String?   // encrypted
+  brokerUserId          String?
+  brokerConnected       Boolean   @default(false)
+  brokerLastSync        DateTime?
+
+  // Preferences
+  preferences           Json      @default("{}")
+  tradingPreferences    Json      @default("{}")
+
+  // Relations
+  positions             Position[]
+  watchlistItems        WatchlistItem[]
+  alerts                Alert[]
+  portfolioTrades       PortfolioTrade[]
+  criteria              CriteriaSetting?
+
+  @@index([email])
+  @@index([brokerConnected])
+}
+
+model CriteriaSetting {
+  id                    String    @id @default(cuid())
+  userId                String    @unique
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Fundamental criteria
+  peMin                 Float     @default(0)
+  peMax                 Float     @default(30)
+  roeMin                Float     @default(10)
+  fcfRequired           Boolean   @default(true)
+  dividendMin           Float     @default(0)
+  marketCapMin          Decimal   @default(100000000) @db.Decimal(18, 2)
+  marketCapMax          Decimal   @default(500000000000) @db.Decimal(18, 2)
+
+  // Sector preferences
+  preferredSectors      String[]  @default(["All"])
+  excludedSectors       String[]  @default([])
+
+  // Technical criteria
+  technicalRequired     Boolean   @default(false)
+  macdRequired          Boolean   @default(false)
+  ichimokuRequired      Boolean   @default(false)
+
+  // Matching threshold
+  matchingThreshold     Float     @default(70) // 70% criteria match to suggest
+
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+}
+
+// ============================================================================
+// STOCKS & MARKET DATA
+// ============================================================================
+
+model Stock {
+  id                    String    @id @default(cuid())
+  ticker                String    @unique
+  name                  String
+  sector                String
+  industry              String?
+  marketCap             Decimal?  @db.Decimal(18, 2)
+  peRatio               Decimal?  @db.Decimal(10, 2)
+  roe                   Decimal?  @db.Decimal(10, 2)
+  fcf                   Decimal?  @db.Decimal(15, 2)
+  dividendYield         Decimal?  @db.Decimal(5, 2)
+  piotroskiScore        Int?
+  week52High            Decimal?  @db.Decimal(10, 2)
+  week52Low             Decimal?  @db.Decimal(10, 2)
+  lastUpdated           DateTime  @default(now())
+
+  // Relations
+  priceHistory          StockPrice[]
+  indicators            TechnicalIndicator[]
+  positions             Position[]
+  watchlistItems        WatchlistItem[]
+  newsArticles          NewsArticle[]
+
+  @@index([ticker])
+  @@index([sector])
+  @@index([lastUpdated])
+}
+
+model StockPrice {
+  id                    String    @id @default(cuid())
+  stockId               String
+  stock                 Stock     @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  date                  DateTime
+  open                  Decimal   @db.Decimal(10, 2)
+  high                  Decimal   @db.Decimal(10, 2)
+  low                   Decimal   @db.Decimal(10, 2)
+  close                 Decimal   @db.Decimal(10, 2)
+  volume                BigInt
+  createdAt             DateTime  @default(now())
+
+  @@unique([stockId, date])
+  @@index([stockId, date])
+}
+
+model TechnicalIndicator {
+  id                    String    @id @default(cuid())
+  stockId               String
+  stock                 Stock     @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  date                  DateTime
+
+  // MACD
+  macd                  Decimal?  @db.Decimal(10, 4)
+  macdSignal            Decimal?  @db.Decimal(10, 4)
+  macdHistogram         Decimal?  @db.Decimal(10, 4)
+
+  // Ichimoku
+  conversionLine        Decimal?  @db.Decimal(10, 2)
+  baseLine              Decimal?  @db.Decimal(10, 2)
+  senouA                Decimal?  @db.Decimal(10, 2)
+  senouB                Decimal?  @db.Decimal(10, 2)
+  laggingSpan           Decimal?  @db.Decimal(10, 2)
+
+  // Moving Averages
+  ema20                 Decimal?  @db.Decimal(10, 2)
+  ema50                 Decimal?  @db.Decimal(10, 2)
+  ema200                Decimal?  @db.Decimal(10, 2)
+
+  createdAt             DateTime  @default(now())
+
+  @@unique([stockId, date])
+  @@index([stockId, date])
+}
+
+// ============================================================================
+// PORTFOLIO POSITIONS & TRADING
+// ============================================================================
+
+model Position {
+  id                    String    @id @default(cuid())
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stockId               String
+  stock                 Stock     @relation(fields: [stockId], references: [id], onDelete: Restrict)
+
+  // Entry details
+  entryDate             DateTime
+  entryPrice            Decimal   @db.Decimal(10, 2)
+  quantity              Int
+  capitalAllocated      Decimal   @db.Decimal(15, 2)
+
+  // Targets & stops
+  target1               Decimal?  @db.Decimal(10, 2)
+  target2               Decimal?  @db.Decimal(10, 2)
+  stopLoss              Decimal   @db.Decimal(10, 2)
+  trailingStopLoss      Decimal?  @db.Decimal(10, 2)
+
+  // Status
+  status                String    @default("active") // active, partial_closed, closed
+  exitDate              DateTime?
+  exitPrice             Decimal?  @db.Decimal(10, 2)
+  exitReason            String?
+
+  // Trading settings
+  tradingMode           String    @default("manual") // manual, auto
+  autoSellAt            String?   // "target1", "target2", "both"
+
+  // P&L
+  realizedPnL           Decimal   @default(0) @db.Decimal(15, 2)
+  unrealizedPnL         Decimal   @default(0) @db.Decimal(15, 2)
+
+  // Meta
+  recommendation        Json?     // Original AI recommendation
+  criteria              Json?     // Matched criteria
+
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  trades                PortfolioTrade[]
+  alerts                Alert[]
+
+  @@index([userId])
+  @@index([userId, status])
+  @@index([stockId])
+}
+
+model PortfolioTrade {
+  id                    String    @id @default(cuid())
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  positionId            String?
+  position              Position? @relation(fields: [positionId], references: [id], onDelete: SetNull)
+  stockId               String
+
+  type                  String    // buy, sell, partial_sell
+  quantity              Int
+  price                 Decimal   @db.Decimal(10, 2)
+  tradeDate             DateTime
+  executionMode         String    // manual, auto
+  reason                String?
+
+  createdAt             DateTime  @default(now())
+
+  @@index([userId, tradeDate])
+}
+
+// ============================================================================
+// WATCHLIST
+// ============================================================================
+
+model WatchlistItem {
+  id                    String    @id @default(cuid())
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stockId               String
+  stock                 Stock     @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  addedDate             DateTime  @default(now())
+  notes                 String?
+
+  @@unique([userId, stockId])
+  @@index([userId])
+}
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+
+model Alert {
+  id                    String    @id @default(cuid())
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  positionId            String?
+  position              Position? @relation(fields: [positionId], references: [id], onDelete: Cascade)
+  stockId               String
+
+  type                  String    // price_target, price_stoploss, news, portfolio
+  title                 String
+  message               String
+  data                  Json?
+
+  isRead                Boolean   @default(false)
+  readAt                DateTime?
+  triggeredAt           DateTime  @default(now())
+  createdAt             DateTime  @default(now())
+
+  @@index([userId, isRead])
+  @@index([userId, triggeredAt])
+}
+
+// ============================================================================
+// NEWS
+// ============================================================================
+
+model NewsArticle {
+  id                    String    @id @default(cuid())
+  title                 String
+  description           String?
+  content               String?
+  url                   String    @unique
+  imageUrl              String?
+  source                String
+  category              String    // portfolio, watchlist, market, international
+  sentiment             String?   // positive, negative, neutral
+
+  // Stock relevance
+  stockId               String?
+  stock                 Stock?    @relation(fields: [stockId], references: [id], onDelete: SetNull)
+  relatedSectors        String[]  @default([])
+  relatedTickers        String[]  @default([])
+
+  publishedAt           DateTime
+  fetchedAt             DateTime  @default(now())
+  createdAt             DateTime  @default(now())
+
+  @@index([category])
+  @@index([publishedAt])
+  @@index([stockId])
+  @@index([fetchedAt])
+}
+
+// ============================================================================
+// RECOMMENDATION LOGS (for AI tracking)
+// ============================================================================
+
+model Recommendation {
+  id                    String    @id @default(cuid())
+  stockId               String
+  recommendationType    String    // buy, sell, hold
+  confidence            Float     // 0-100
+  reason                String
+  matchedCriteria       Json      // { met: [], notMet: [], values: {} }
+  scoringData           Json      // { fundamental: X, technical: Y, sentiment: Z }
+  createdAt             DateTime  @default(now())
+
+  @@index([stockId])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// AUDIT LOG (compliance)
+// ============================================================================
+
+model AuditLog {
+  id                    String    @id @default(cuid())
+  userId                String?
+  action                String    // position_opened, position_closed, trade_executed, alert_triggered
+  details               Json
+  timestamp             DateTime  @default(now())
+
+  @@index([userId])
+  @@index([timestamp])
+}
